@@ -1,0 +1,31 @@
+[gd_scene load_steps=4 format=3]
+
+[sub_resource type="StandardMaterial3D" id="Mat_Pole"]
+albedo_color = Color(0.25, 0.2, 0.16, 1)
+roughness = 1.0
+
+[sub_resource type="StandardMaterial3D" id="Mat_Cloth"]
+albedo_color = Color(0.8, 0.22, 0.2, 1)
+roughness = 0.8
+cull_mode = 2
+
+[sub_resource type="CylinderMesh" id="Mesh_Pole"]
+top_radius = 0.05
+bottom_radius = 0.05
+height = 3.0
+radial_segments = 6
+
+[sub_resource type="QuadMesh" id="Mesh_Cloth"]
+size = Vector2(1.2, 0.7)
+
+[node name="FlagRed" type="Node3D"]
+
+[node name="Pole" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+mesh = SubResource("Mesh_Pole")
+surface_material_override/0 = SubResource("Mat_Pole")
+
+[node name="Cloth" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.6, 2.55, 0)
+mesh = SubResource("Mesh_Cloth")
+surface_material_override/0 = SubResource("Mat_Cloth")
