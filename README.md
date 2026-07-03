@@ -1,39 +1,35 @@
-# GodotGame — Direct Strike: Batch Commander
+# FightSimulations — Godot 4 C# Battle Viewer
 
-A continuous-battlefield autobattler built in **Godot 4 (C# / .NET 8)**.
+A preset-driven army battle simulator built in **Godot 4 (.NET / C#)**. Pick a
+matchup, two armies spawn on a procedurally-built battlefield, and you watch them
+fight until one side is wiped out.
 
-Two castles, one endless front line. Every ~10 seconds both sides deploy a *batch*
-of units that march out and fight until they die. You shape your standing army with a
-**gold budget**, counter the enemy's evolving compositions, and bank **buffs** to tip
-the war in your favor. Win by razing the enemy keep; lose if your castle falls.
+## Concept
 
-## Core systems
-
-- **Continuous fight** — the battlefield never resets; units persist until they die.
-- **Budget economy** — a growing gold budget reserves your batch composition
-  (Melee / Archer / Healer). Passive income + per-kill bounties let you field bigger batches.
-- **Timed batches** — both sides spawn at their castle every interval and march forward.
-- **Enemy evolution** — later batches add Archers, Fast, Tanks, Healers, and a Boss every 5th,
-  with an on-screen preview of the next enemy wave for counter-picking.
-- **Soft + hard stacking** — units age and decay over time; a per-side cap culls the oldest.
-- **Three buff categories** — `[Army]` permanent, `[Batch]` temporary (next 1–3 batches),
-  and `[Economy]` (budget / income / costs / timer).
+- Choose a preset scenario → two armies deploy → the battle plays out automatically.
+- Units are built from **procedural meshes** — no external 3D assets required.
+- Roles include Melee, Ranged, Healer, AoE casters, and a Boss.
+- Camera pan/zoom, billboard health bars, homing projectiles, and screen shake.
 
 ## Run it
 
-1. Open the project in **Godot 4.x (.NET / Mono build)**.
-2. Build the C# solution: `dotnet build`.
-3. Press **F5** to play. Speed: `1` / `2` / `3` (also via the on-screen button).
+1. Open the project in **Godot 4.x** (the **.NET / Mono** editor build).
+2. Build the C# solution: `dotnet build .\FightSimulations.sln`.
+3. Press **F5** in the Godot editor to play. Main scene: `res://scenes/main.tscn`.
 
 ## Project layout
 
 ```
 scripts/
-  GameManager.cs     — economy/budget, composition + UI, batch spawning, buffs, camera, castles
-  RoundManager.cs    — continuous batch director: timer, evolving enemy batches, cap, game over
-  units/
-    UnitBase.cs      — HP, state machine, animation, movement, separation, soft-stacking aging
-    behaviors/       — Melee / Ranged / Healer (Caster is a stub)
-scenes/              — main.tscn, castle, unit scenes
-assets/              — character models
+  framework/   — reusable Godot layer: Actor, CameraRig, Projectile, HealthBar3D,
+                 GodotEx, BatchDirector, Economy, BuffSystem, IActorBehavior
+  behaviors/   — reusable AI: Melee / Ranged / Healer
+  game/        — the simulator: SimUnit, UnitArchetype, Scenario/Presets,
+                 BattleEnvironment, SimDirector, BattleHud, Main (orchestrator)
+scenes/        — main.tscn
 ```
+
+## Requirements
+
+- Godot 4.x with .NET support
+- .NET 8 SDK

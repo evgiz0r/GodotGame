@@ -2,27 +2,13 @@
 .godot/
 /android/
 
-# Godot-specific ignores
-.import/
-export.cfg
-export_presets.cfg
-
-# Imported translations (auto-generated from CSV files)
-*.translation
-
-# Mono-specific ignores
+# .NET / C# build artifacts
 .mono/
-data_*/
-mono_crash.*.json
-
-# .NET / C# build output
 bin/
 obj/
 *.user
-*.suo
-*.userprefs
 .vs/
 
-# OS / editor cruft
-Thumbs.db
-.DS_Store
+# Godot export output
+/export/
+/build/

@@ -1,9 +1,0 @@
-[gd_scene load_steps=3 format=3]
-
-[ext_resource type="PackedScene" path="res://assets/characters/Knight_Male.gltf" id="Knight_1"]
-[ext_resource type="Script" path="res://scripts/units/UnitBase.cs" id="Script_UnitBase"]
-
-[node name="Grunt" type="Node3D"]
-script = ExtResource("Script_UnitBase")
-
-[node name="KnightMesh" parent="." instance=ExtResource("Knight_1")]

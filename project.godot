@@ -10,26 +10,19 @@ config_version=5
 
 [application]
 
-config/name="DirectStrikePort"
+config/name="FightSimulations"
 run/main_scene="res://scenes/main.tscn"
-config/features=PackedStringArray("4.7", "Forward Plus")
+config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 config/icon="res://icon.svg"
-config/main_scene="res://scenes/main.tscn"
 
 [display]
 
-window/size/viewport_width=1600
-window/size/viewport_height=900
-window/stretch/mode="disabled"
+window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
 [dotnet]
 
-project/assembly_name="DirectStrikePort"
-
-[filesystem]
-
-import/blender/enabled=false
+project/assembly_name="FightSimulations"
 
 [physics]
 
@@ -38,9 +31,3 @@ import/blender/enabled=false
 [rendering]
 
 rendering_device/driver.windows="d3d12"
-anti_aliasing/quality/msaa_3d=2
-anti_aliasing/quality/screen_space_aa=0
-textures/default_filters/anisotropic_filtering_level=4
-lights_and_shadows/directional_shadow/size=4096
-lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
-
