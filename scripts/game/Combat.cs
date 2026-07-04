@@ -29,6 +29,7 @@ public static class Combat
 
     public static void SpawnBlast(Actor source, Vector3 center, float radius, Color color)
     {
+        Sound.Blast?.Invoke(center);
         var blast = new BlastEffect { Radius = radius, Color = color };
         source.GetParent().AddChild(blast);
         blast.GlobalPosition = center;

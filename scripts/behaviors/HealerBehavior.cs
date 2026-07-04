@@ -18,7 +18,7 @@ public class HealerBehavior : IActorBehavior
                 unit.SetState(UnitState.Attacking);
                 unit.PlayAnim("SwordSlash");
                 ally.Heal(unit.Damage);
-                _timer = unit.AttackCooldown;
+                _timer = unit.RollCooldown;
             }
             else if (unit.State == UnitState.Walking)
             {

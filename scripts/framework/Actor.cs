@@ -33,6 +33,8 @@ public partial class Actor : Node3D, IDamageable
     public bool IsBattleUnit = false;
     // true = stationary structure: targetable + takes damage, never moves.
     public bool IsStructure = false;
+    // true = this unit backpedals + slow-regens after a heavy hit (tanks/bosses set false).
+    public bool CanRetreat = true;
 
     // Run buffs / evolution (set before AddChild, or applied live via ReapplyBuffs).
     public float BuffHpMult = 1f;
@@ -143,12 +145,36 @@ public partial class Actor : Node3D, IDamageable
     // healer path) and call base.Tick for the standard march-and-fight behaviour.
     protected virtual void Tick(double delta)
     {
+        if (_retreat > 0f)
+        {
+            Retreat(delta);
+            ApplySeparation();
+            return;
+        }
         Actor target = FindNearestEnemy();
         if (target != null)
             Behavior?.OnUpdate(this, target, delta);
         else
-            Advance(delta);
+        {
+            // No enemy in detection range: steer toward the nearest enemy anywhere on the
+            // field so stragglers/flankers converge on the fight instead of marching off
+            // the far edge. Only march straight ahead if the enemy army is truly gone.
+            Actor far = FindNearestEnemyAnywhere();
+            if (far != null) AdvanceToward(far.GlobalPosition, delta);
+            else Advance(delta);
+        }
         ApplySeparation();
+    }
+
+    // Backpedal toward our own side while still facing the enemy, healing a little as we go.
+    private void Retreat(double delta)
+    {
+        _retreat -= (float)delta;
+        SetState(UnitState.Walking);
+        Actor enemy = FindNearestEnemy();
+        if (enemy != null) FaceToward(enemy.GlobalPosition);
+        Position += -AdvanceDir * MoveSpeed * WeatherState.MoveMult * RetreatSpeedMult * (float)delta;
+        if (Hp < MaxHp) Heal(RetreatRegenPerSec * (float)delta);
     }
 
     // No enemy in range: keep pushing toward the enemy side.
@@ -160,12 +186,25 @@ public partial class Actor : Node3D, IDamageable
         MoveToward(dir, delta);
     }
 
+    // March toward a specific world position (used to converge on the nearest enemy when
+    // none are within detection range yet).
+    protected void AdvanceToward(Vector3 worldPos, double delta)
+    {
+        SetState(UnitState.Walking);
+        Vector3 dir = worldPos - GlobalPosition; dir.Y = 0f;
+        if (dir.LengthSquared() < 0.0001f) { Advance(delta); return; }
+        dir = dir.Normalized();
+        FaceToward(worldPos);
+        MoveToward(dir, delta);
+    }
+
     // Public wrapper so behaviors (e.g. an idle healer) can keep marching.
     public void AdvanceStep(double delta) => Advance(delta);
 
     // Fire 1 + ExtraProjectiles homing arrows toward a target.
     public void FireProjectile(Actor target)
     {
+        Sound.Shoot?.Invoke(GlobalPosition);
         var color = UnitTeam == Team.Player ? new Color(0.4f, 0.7f, 1f) : new Color(1f, 0.5f, 0.35f);
         int shots = 1 + Mathf.Max(0, ExtraProjectiles);
         float baseY = IsStructure ? 3.0f : 1.4f;
@@ -192,7 +231,7 @@ public partial class Actor : Node3D, IDamageable
     }
 
     public void MoveToward(Vector3 direction, double delta) =>
-        Position += direction * MoveSpeed * (float)delta;
+        Position += direction * MoveSpeed * WeatherState.MoveMult * (float)delta;
 
     public void SetFacing(Vector3 worldDirection) => GodotEx.FacePlusZ(this, worldDirection);
 
@@ -209,7 +248,13 @@ public partial class Actor : Node3D, IDamageable
         if (State == UnitState.Dead) return;
         Hp -= amount;
         if (Hp <= 0f) Kill(bounty: true);
-        else OnDamaged(amount);
+        else
+        {
+            OnDamaged(amount);
+            Sound.Hit?.Invoke(GlobalPosition);
+            if (CanRetreat && !IsStructure && amount >= MaxHp * RetreatHitFraction)
+                _retreat = RetreatDuration;
+        }
         UpdateHpBar();
     }
 
@@ -233,6 +278,7 @@ public partial class Actor : Node3D, IDamageable
         Hp = 0f;
         SetState(UnitState.Dead);
         if (_healthBar != null) _healthBar.Visible = false;
+        Sound.Death?.Invoke(GlobalPosition);
         OnKilled();
         // Always notify: the batch queue needs every death (combat or decay) to refill
         // a freed slot. The `bounty` flag is forwarded for optional reward/kill counting.
@@ -244,12 +290,30 @@ public partial class Actor : Node3D, IDamageable
         string group = UnitTeam == Team.Player ? "enemy_units" : "player_units";
         Actor nearest = null;
         float nearestDist = float.MaxValue;
+        float range = DetectionRange * WeatherState.RangeMult;
         foreach (var node in GetTree().GetNodesInGroup(group))
         {
             if (node is Actor u && u.State != UnitState.Dead)
             {
                 float d = Position.DistanceTo(u.Position);
-                if (d <= DetectionRange && d < nearestDist) { nearestDist = d; nearest = u; }
+                if (d <= range && d < nearestDist) { nearestDist = d; nearest = u; }
+            }
+        }
+        return nearest;
+    }
+
+    // Nearest living enemy at ANY distance (used to steer advancing units toward the fight).
+    public Actor FindNearestEnemyAnywhere()
+    {
+        string group = UnitTeam == Team.Player ? "enemy_units" : "player_units";
+        Actor nearest = null;
+        float nearestDist = float.MaxValue;
+        foreach (var node in GetTree().GetNodesInGroup(group))
+        {
+            if (node is Actor u && !u.IsStructure && u.State != UnitState.Dead)
+            {
+                float d = Position.DistanceTo(u.Position);
+                if (d < nearestDist) { nearestDist = d; nearest = u; }
             }
         }
         return nearest;
@@ -273,9 +337,21 @@ public partial class Actor : Node3D, IDamageable
         return best;
     }
 
+    // Retreat: after a hit >= this fraction of MaxHp, a unit backpedals for a moment while
+    // slowly regenerating, then re-engages. Creates spacing + in/out cycling on the line.
+    public static float RetreatHitFraction = 0.22f;
+    public static float RetreatDuration = 0.28f;
+    public static float RetreatSpeedMult = 1.12f;
+    public static float RetreatRegenPerSec = 4f;
+    private float _retreat;
+
+    // Effective attack cooldown after weather (snow slows attacks). Behaviors reset timers
+    // from this instead of the raw AttackCooldown so weather is applied in one place.
+    public float RollCooldown => AttackCooldown * WeatherState.AttackCooldownMult;
+
     // Lightweight soft separation so living units don't stack on one cell. Firmness is
     // tunable and the per-frame push is clamped so a very crowded unit can't teleport.
-    public static float SeparationStrength = 0.7f;
+    public static float SeparationStrength = 0.95f;
 
     protected void ApplySeparation()
     {

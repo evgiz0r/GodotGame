@@ -24,6 +24,15 @@ public partial class Main : Node3D
     private bool _cinematic;
     private SimUnit _bossRef;
 
+    // Live reinforcement waves for the current scenario.
+    private sealed class ReinfRun { public Reinforcement Cfg; public float Timer; public int Spawned; }
+    private readonly List<ReinfRun> _reinf = new();
+
+    // Army-bar peaks (rise with reinforcements) + the KO → result-card beat.
+    private float _pHpRef, _eHpRef;
+    private float _koDelay;
+    private string _pendingResult;
+
     // Two camera angles: standard 3/4 and a lower, flatter cinematic framing.
     private static readonly Vector3 StdOffset = new(0f, 24f, 26f);
     private static readonly Vector3 CineOffset = new(0f, 11f, 34f);
@@ -40,11 +49,16 @@ public partial class Main : Node3D
         AddChild(_cam);
         _rig = new CameraRig(_cam);
         _rig.Setup(Vector3.Zero, StdOffset, zoom: 1f, fov: 50f);
+        _rig.ZoomMax = 2.3f;               // allow pulling further out for the bigger field
+        _rig.PanClampX = new Vector2(-95f, 95f);
+        _rig.PanClampZ = new Vector2(-55f, 65f);
         _shake = new CameraShake();
 
         _director = new SimDirector();
         AddChild(_director);
         _director.BattleEnded += OnBattleEnded;
+
+        AddChild(new SfxManager());
 
         _hud = new BattleHud();
         AddChild(_hud);
@@ -68,6 +82,10 @@ public partial class Main : Node3D
         if (e is InputEventMouseButton mb && mb.Pressed &&
             (mb.ButtonIndex == MouseButton.WheelUp || mb.ButtonIndex == MouseButton.WheelDown))
             _autoZoom = false;
+
+        // A manual pan (right-drag) hands the camera to the user — stop following the boss.
+        if (e is InputEventMouseButton rmb && rmb.Pressed && rmb.ButtonIndex == MouseButton.Right)
+            _followBoss = false;
 
         if (_rig.HandleInput(e)) return;
         if (e is InputEventKey k && k.Pressed && !k.Echo)
@@ -96,8 +114,60 @@ public partial class Main : Node3D
         if (_followBoss && _bossRef != null && GodotObject.IsInstanceValid(_bossRef) && _bossRef.IsAlive)
             _rig.SetTarget(_rig.Target.Lerp(_bossRef.GlobalPosition, (float)delta * 1.5f));
 
+        UpdateReinforcements(delta);
+        UpdateArmyBars();
+        UpdateKo(delta);
+
         _cam.Position = _rig.CameraBasePosition + _shake.Offset(delta);
         _cam.LookAt(_rig.Target, Vector3.Up);
+    }
+
+    // Sum each side's living HP into the top bars; the reference peak rises with reinforcements.
+    private void UpdateArmyBars()
+    {
+        if (_currentIndex < 0) return;
+        float p = SumHp("player_units");
+        float e = SumHp("enemy_units");
+        _pHpRef = Mathf.Max(_pHpRef, p);
+        _eHpRef = Mathf.Max(_eHpRef, e);
+        _hud.SetArmyHp(_pHpRef > 0f ? p / _pHpRef : 0f, _eHpRef > 0f ? e / _eHpRef : 0f);
+    }
+
+    private float SumHp(string group)
+    {
+        float total = 0f;
+        foreach (var node in GetTree().GetNodesInGroup(group))
+            if (node is Actor a && a.IsAlive) total += a.Hp;
+        return total;
+    }
+
+    // Hold the "K.O." splash briefly, then reveal the result card.
+    private void UpdateKo(double delta)
+    {
+        if (_koDelay <= 0f) return;
+        _koDelay -= (float)delta;
+        if (_koDelay <= 0f && _pendingResult != null)
+        {
+            _hud.ShowResult(_pendingResult);
+            _pendingResult = null;
+        }
+    }
+
+    // Timed waves that march in from the back once the fight is live.
+    private void UpdateReinforcements(double delta)
+    {
+        if (!Actor.BattleActive) return;
+        foreach (var run in _reinf)
+        {
+            if (run.Spawned >= run.Cfg.MaxWaves) continue;
+            run.Timer -= (float)delta;
+            if (run.Timer <= 0f)
+            {
+                SpawnReinforcement(run.Cfg);
+                run.Spawned++;
+                run.Timer = run.Cfg.Interval;
+            }
+        }
     }
 
     private void UpdateCountdown(double delta)
@@ -128,10 +198,19 @@ public partial class Main : Node3D
         ClearBattlefield();
         _director.Reset();
         BuildEnvironment(scenario.Env);
+        WeatherFx.Apply(scenario.Weather, _envNode);
 
         _bossRef = null;
-        SpawnArmy(scenario.Player, Team.Player);
-        SpawnArmy(scenario.Enemy, Team.Enemy);
+        SpawnArmy(scenario.Player, Team.Player, scenario.PlayerFormation);
+        SpawnArmy(scenario.Enemy, Team.Enemy, scenario.EnemyFormation);
+
+        if (scenario.CastleSide is Team castleSide)
+            SpawnCastle(castleSide);
+
+        _reinf.Clear();
+        if (scenario.Reinforcements != null)
+            foreach (var r in scenario.Reinforcements)
+                _reinf.Add(new ReinfRun { Cfg = r, Timer = r.FirstDelay, Spawned = 0 });
 
         _followBoss = _bossRef != null;
         _rig.SetTarget(Vector3.Zero);
@@ -139,10 +218,16 @@ public partial class Main : Node3D
         _zoomTarget = 1f;
         _autoZoom = true;
 
+        _pHpRef = 0f;
+        _eHpRef = 0f;
+        _koDelay = 0f;
+        _pendingResult = null;
+
         Actor.BattleActive = false;
         _countdown = 1.2f;
         _fightFlash = 0f;
         _hud.ShowBattle();
+        _hud.SetInfo($"{scenario.Name}    {WeatherFx.Label(scenario.Weather)}");
     }
 
     private void ReturnToMenu()
@@ -150,6 +235,10 @@ public partial class Main : Node3D
         Actor.BattleActive = false;
         _currentIndex = -1;
         _followBoss = false;
+        _reinf.Clear();
+        _koDelay = 0f;
+        _pendingResult = null;
+        WeatherState.Clear();
         ClearBattlefield();
         _hud.ShowMenu();
     }
@@ -157,13 +246,16 @@ public partial class Main : Node3D
     private void OnBattleEnded(BattleResult result)
     {
         _followBoss = false;
-        string text = result switch
+        _pendingResult = result switch
         {
             BattleResult.PlayerWins => "BLUE ARMY WINS",
             BattleResult.EnemyWins => "RED ARMY WINS",
             _ => "MUTUAL DESTRUCTION",
         };
-        _hud.ShowResult(text);
+        _hud.ShowKo();
+        _koDelay = 1.3f;
+        SimEvents.Shake?.Invoke(0.7f);
+        Sound.Ko?.Invoke();
     }
 
     private void ClearBattlefield()
@@ -180,8 +272,8 @@ public partial class Main : Node3D
 
     // Flatten an army's blocks into individual units with a soft "front-line" sort key —
     // melee/tanks bias forward, casters back, but with random slack so ranks blend — then
-    // place them in a loose, jittered grid on their side of the field facing the enemy.
-    private void SpawnArmy(ArmyEntry[] entries, Team team)
+    // place them in the chosen formation on their side of the field facing the enemy.
+    private void SpawnArmy(ArmyEntry[] entries, Team team, Formation formation)
     {
         var roster = new List<(UnitArchetype arch, float key)>();
         foreach (var e in entries)
@@ -190,25 +282,116 @@ public partial class Main : Node3D
         roster.Sort((a, b) => a.key.CompareTo(b.key));
 
         int n = roster.Count;
-        int file = Mathf.Clamp(Mathf.CeilToInt(Mathf.Sqrt(n * 2f)), 1, 16);
-        const float gap = 9f, dz = 1.5f, dx = 1.7f;
+        var offsets = FormationOffsets(n, formation);
+        const float gap = 20f;
+        float side = team == Team.Player ? -1f : 1f;
 
         for (int i = 0; i < n; i++)
         {
             var arch = roster[i].arch;
-            int rank = i / file;
-            int col = i % file;
-            float z = (col - (file - 1) / 2f) * dz + (GD.Randf() * 2f - 1f) * 0.7f;
-            float depth = rank * dx + (GD.Randf() * 2f - 1f) * 0.6f;
-            float x = team == Team.Player ? -(gap + depth) : (gap + depth);
+            float z = offsets[i].X;
+            float depth = offsets[i].Y;
+            float x = side * (gap + depth);
 
             var unit = new SimUnit { Archetype = arch, UnitTeam = team, IsBattleUnit = true };
+            // Per-unit pace so a rank doesn't march in lockstep (also helps break clumps).
+            unit.BuffMoveSpeedMult = 0.8f + GD.Randf() * 0.4f;
             _armies.AddChild(unit);
             unit.GlobalPosition = new Vector3(x, 0f, z);
             // Slight facing jitter so they don't stare in perfect lockstep.
             unit.SetFacing((unit.AdvanceDir + new Vector3(0f, 0f, (GD.Randf() * 2f - 1f) * 0.25f)).Normalized());
 
             if (arch.Role == Role.Boss && team == Team.Player) _bossRef = unit;
+        }
+    }
+
+    // Local (lateral z, forward depth) placement per formation. depth 0 = closest to enemy.
+    private static List<Vector2> FormationOffsets(int n, Formation formation)
+    {
+        var list = new List<Vector2>(n);
+        float J(float f) => (GD.Randf() * 2f - 1f) * f;
+
+        switch (formation)
+        {
+            case Formation.Block:
+            {
+                int file = Mathf.Clamp(Mathf.CeilToInt(Mathf.Sqrt(n)), 1, 14);
+                for (int i = 0; i < n; i++)
+                    list.Add(new Vector2((i % file - (file - 1) / 2f) * 2.7f + J(0.5f), (i / file) * 2.7f + J(0.5f)));
+                break;
+            }
+            case Formation.Spread:
+            {
+                int file = Mathf.Clamp(Mathf.CeilToInt(Mathf.Sqrt(n * 1.5f)), 1, 18);
+                for (int i = 0; i < n; i++)
+                    list.Add(new Vector2((i % file - (file - 1) / 2f) * 4.7f + J(2.1f), (i / file) * 4.5f + J(2.0f)));
+                break;
+            }
+            case Formation.Line:
+            {
+                int ranks = n > 40 ? 3 : 2;
+                int file = Mathf.Max(1, Mathf.CeilToInt(n / (float)ranks));
+                for (int i = 0; i < n; i++)
+                    list.Add(new Vector2((i % file - (file - 1) / 2f) * 2.9f + J(0.6f), (i / file) * 2.9f + J(0.6f)));
+                break;
+            }
+            case Formation.Wedge:
+            {
+                int r = 0, placed = 0;
+                while (placed < n)
+                {
+                    int width = 2 * r + 1;
+                    for (int c = 0; c < width && placed < n; c++, placed++)
+                        list.Add(new Vector2((c - (width - 1) / 2f) * 2.9f + J(0.6f), r * 2.9f + J(0.6f)));
+                    r++;
+                }
+                break;
+            }
+            default: // Grid
+            {
+                int file = Mathf.Clamp(Mathf.CeilToInt(Mathf.Sqrt(n * 2f)), 1, 16);
+                for (int i = 0; i < n; i++)
+                    list.Add(new Vector2((i % file - (file - 1) / 2f) * 2.9f + J(1.1f), (i / file) * 3.1f + J(1.0f)));
+                break;
+            }
+        }
+        return list;
+    }
+
+    // Place a defended castle well behind `side`'s starting line and register it so the
+    // battle ends the moment it falls.
+    private void SpawnCastle(Team side)
+    {
+        float x = side == Team.Player ? -40f : 40f;
+        var castle = new Castle { UnitTeam = side, IsBattleUnit = true, IsStructure = true };
+        _armies.AddChild(castle);
+        castle.GlobalPosition = new Vector3(x, 0f, 0f);
+        _director.RegisterCastle(castle, side);
+    }
+
+    // Spawn one reinforcement wave marching in from the far back of its side.
+    private void SpawnReinforcement(Reinforcement r)
+    {
+        var roster = new List<UnitArchetype>();
+        foreach (var e in r.Units)
+            for (int i = 0; i < e.Count; i++)
+                roster.Add(e.Archetype);
+
+        int n = roster.Count;
+        float side = r.Side == Team.Player ? -1f : 1f;
+        int file = Mathf.Clamp(Mathf.CeilToInt(Mathf.Sqrt(n * 2f)), 1, 10);
+
+        for (int i = 0; i < n; i++)
+        {
+            int rank = i / file, col = i % file;
+            float z = (col - (file - 1) / 2f) * 1.6f + (GD.Randf() * 2f - 1f) * 0.5f;
+            float x = side * (44f + rank * 1.6f);
+
+            var unit = new SimUnit { Archetype = roster[i], UnitTeam = r.Side, IsBattleUnit = true };
+            unit.BuffMoveSpeedMult = 0.8f + GD.Randf() * 0.4f;
+            _armies.AddChild(unit);
+            unit.GlobalPosition = new Vector3(x, 0f, z);
+            unit.SetFacing(unit.AdvanceDir);
         }
     }
 

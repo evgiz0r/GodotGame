@@ -27,7 +27,7 @@ public class RangedBehavior : IActorBehavior
                 unit.SetState(UnitState.Attacking);
                 unit.PlayAnim("Shoot_OneHanded");
                 unit.FireProjectile(target);
-                _attackTimer = unit.AttackCooldown;
+                _attackTimer = unit.RollCooldown;
             }
             else if (unit.State == UnitState.Walking)
             {

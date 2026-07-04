@@ -33,7 +33,7 @@ public class AoeBehavior : IActorBehavior
             Combat.DamageEnemiesInRadius(unit, center, _radius, unit.Damage);
             Combat.SpawnBlast(unit, center, _radius, new Color(0.7f, 0.4f, 1f));
             SimEvents.Shake?.Invoke(0.15f);
-            _timer = unit.AttackCooldown;
+            _timer = unit.RollCooldown;
         }
         else if (unit.State == UnitState.Walking)
         {

@@ -23,6 +23,35 @@ public partial class Projectile : Node3D
             ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
         };
         AddChild(new MeshInstance3D { Mesh = mesh });
+        AddChild(BuildTrail());
+    }
+
+    // A short, self-following streak so arrows read as moving fast.
+    private CpuParticles3D BuildTrail()
+    {
+        var trailColor = ArrowColor; trailColor.A = 0.5f;
+        return new CpuParticles3D
+        {
+            Amount = 14,
+            Lifetime = 0.28f,
+            LocalCoords = false,
+            Direction = Vector3.Zero,
+            Spread = 0f,
+            Gravity = Vector3.Zero,
+            InitialVelocityMin = 0f,
+            InitialVelocityMax = 0f,
+            Mesh = new SphereMesh
+            {
+                Radius = 0.08f,
+                Height = 0.16f,
+                Material = new StandardMaterial3D
+                {
+                    AlbedoColor = trailColor,
+                    ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                    Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                },
+            },
+        };
     }
 
     public override void _Process(double delta)
@@ -47,7 +76,8 @@ public partial class Projectile : Node3D
             return;
         }
 
-        GlobalPosition += to.Normalized() * step;
+        // Homing step, plus weather wind so arrows visibly drift in a gale.
+        GlobalPosition += to.Normalized() * step + WeatherState.Wind * (float)delta;
         LookAt(_aimPoint, Vector3.Up);
     }
 

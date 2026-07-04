@@ -32,7 +32,7 @@ public class BossBehavior : IActorBehavior
             Combat.DamageEnemiesInRadius(unit, unit.GlobalPosition, _range, unit.Damage);
             Combat.SpawnBlast(unit, unit.GlobalPosition, _range, new Color(1f, 0.4f, 0.2f));
             SimEvents.Shake?.Invoke(0.6f);
-            _timer = unit.AttackCooldown;
+            _timer = unit.RollCooldown;
         }
         else if (unit.State == UnitState.Walking)
         {

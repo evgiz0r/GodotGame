@@ -11,15 +11,33 @@ public partial class SimDirector : Node
     public event Action<BattleResult> BattleEnded;
 
     private bool _finished;
+    private Actor _castle;
+    private Team _castleSide;
 
     public override void _Ready() => Actor.UnitDied = OnUnitDied;   // ASSIGN, never +=
     public override void _ExitTree() => Actor.UnitDied = null;
 
-    public void Reset() => _finished = false;
+    public void Reset()
+    {
+        _finished = false;
+        _castle = null;
+    }
+
+    // Tell the director a side is defending a castle; losing it ends the battle immediately.
+    public void RegisterCastle(Actor castle, Team side)
+    {
+        _castle = castle;
+        _castleSide = side;
+    }
 
     private void OnUnitDied(Team _)
     {
         if (_finished) return;
+        if (_castle != null && (!GodotObject.IsInstanceValid(_castle) || !_castle.IsAlive))
+        {
+            Finish(_castleSide == Team.Player ? BattleResult.EnemyWins : BattleResult.PlayerWins);
+            return;
+        }
         int player = LivingCount("player_units");
         int enemy = LivingCount("enemy_units");
         if (player == 0 && enemy == 0) Finish(BattleResult.Draw);

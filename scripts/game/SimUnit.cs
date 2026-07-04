@@ -1,23 +1,28 @@
+using System.Collections.Generic;
 using Godot;
 using Framework;
 
 // A data-driven fighter: one class configured from a UnitArchetype, so scenarios can mix
 // any roles without a subclass per unit. Set Archetype + UnitTeam + IsBattleUnit BEFORE
 // AddChild; set GlobalPosition + SetFacing AFTER.
+//
+// The body is an instanced Quaternius character (glTF) whose own AnimationPlayer + skeleton
+// drive Walk/Run/Idle/SwordSlash/Shoot_OneHanded/Death (the base Actor finds and plays
+// them). A per-unit material overlay gives a translucent team wash + a white hit flash.
 public partial class SimUnit : Actor
 {
     public UnitArchetype Archetype;
 
-    private Node3D _rig;                        // holds body + head so they animate together
-    private MeshInstance3D _body;
-    private StandardMaterial3D _bodyMat, _headMat;
-    private Color _bodyBase, _headBase;
-    private float _attack;                      // 1 -> 0 across one swing (lunge)
-    private float _flash;                       // 1 -> 0 after a hit (flash + squash)
+    private Node3D _model;                        // instanced character (or procedural fallback)
+    private readonly List<MeshInstance3D> _meshes = new();
+    private StandardMaterial3D _overlay;          // team wash + hit flash, shared across meshes
+    private Color _teamBase;                       // resting overlay color (team tint)
+    private float _flash;                          // 1 -> 0 after a hit (white flash)
+    private float _deadT;                          // seconds since death (corpse sink/dim)
 
-    private const float AttackTime = 0.26f;
-    private const float LungeDist = 0.5f;
-    private const float FlashTime = 0.16f;
+    private const float FlashTime = 0.18f;
+    private const float DeadSettle = 2.5f;         // time to fully sink + darken a corpse
+    private const float DeadSink = 0.7f;           // how far a corpse sinks into the ground
 
     protected override void ConfigureStats()
     {
@@ -30,6 +35,8 @@ public partial class SimUnit : Actor
         BodyScale = a.BodyScale;
         CollisionRadius = a.CollisionRadius;
         DetectionRange = a.DetectionRange;
+        // Heavy front-liners hold the line; everyone else cycles in/out when hit hard.
+        CanRetreat = a.Role != Role.Tank && a.Role != Role.Boss;
     }
 
     protected override Vector3 ComputeBaseScale() => Vector3.One * Archetype.BodyScale;
@@ -39,105 +46,114 @@ public partial class SimUnit : Actor
         Role.Ranged => new RangedBehavior(),
         Role.AoE => new AoeBehavior(Archetype.SplashRadius),
         Role.Healer => new HealerBehavior(),
-        Role.Boss => new BossBehavior(Archetype.AttackRange),
+        Role.Boss => new BossBehavior(Archetype.AttackRange + Archetype.CollisionRadius),
         _ => new MeleeBehavior(),
     };
 
     protected override void BuildVisuals()
     {
-        var roleColor = Archetype.Color;
+        // The animated character body. Its own AnimationPlayer is picked up by Actor._Ready.
+        _model = LoadModel() ?? BuildFallbackBody(Archetype.Color);
+        AddChild(_model);
+        CollectMeshes(_model, _meshes);
 
-        // Team disc at the feet so sides read instantly from a top-down angle. Stays put
-        // (not part of the animated rig) so it reads as the unit's "ground marker".
-        var teamColor = UnitTeam == Team.Player
-            ? new Color(0.25f, 0.5f, 1.0f)
-            : new Color(1.0f, 0.3f, 0.28f);
-        var disc = new MeshInstance3D
+        // A single translucent overlay tints every body mesh with the team color so blue vs
+        // red reads at a glance; the same material flashes white on a hit (see _Process).
+        _teamBase = UnitTeam == Team.Player
+            ? new Color(0.30f, 0.45f, 1.0f, 0.14f)
+            : new Color(1.0f, 0.32f, 0.30f, 0.15f);
+        _overlay = new StandardMaterial3D
         {
-            Mesh = new CylinderMesh { TopRadius = 0.6f, BottomRadius = 0.6f, Height = 0.06f },
-            Position = new Vector3(0f, 0.04f, 0f),
+            AlbedoColor = _teamBase,
+            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
         };
-        ((CylinderMesh)disc.Mesh).Material = Unshaded(teamColor);
-        AddChild(disc);
+        foreach (var m in _meshes) m.MaterialOverlay = _overlay;
+    }
 
-        // Rig pivots at the unit origin; its local +Z is "forward" (toward the target when
-        // facing), so lunging along +Z reads as a melee/ranged swing.
-        _rig = new Node3D();
-        AddChild(_rig);
+    private Node3D LoadModel()
+    {
+        if (string.IsNullOrEmpty(Archetype.Model)) return null;
+        var scene = GD.Load<PackedScene>(Archetype.Model);
+        return scene?.Instantiate<Node3D>();
+    }
 
-        _bodyBase = roleColor;
-        _bodyMat = new StandardMaterial3D { AlbedoColor = roleColor, Roughness = 0.85f };
-        _body = new MeshInstance3D
+    // Fallback capsule+sphere body (used only if the model can't be loaded), so the sim
+    // still runs without art. No AnimationPlayer here, so PlayAnim just no-ops.
+    private Node3D BuildFallbackBody(Color roleColor)
+    {
+        var root = new Node3D();
+        var bodyMat = new StandardMaterial3D { AlbedoColor = roleColor, Roughness = 0.85f };
+        var body = new MeshInstance3D
         {
             Mesh = new CapsuleMesh { Radius = 0.35f, Height = 1.3f },
             Position = new Vector3(0f, 1.0f, 0f),
         };
-        ((CapsuleMesh)_body.Mesh).Material = _bodyMat;
-        _rig.AddChild(_body);
+        ((CapsuleMesh)body.Mesh).Material = bodyMat;
+        root.AddChild(body);
 
-        _headBase = Lighten(roleColor, 0.15f);
-        _headMat = new StandardMaterial3D { AlbedoColor = _headBase, Roughness = 0.7f };
         var head = new MeshInstance3D
         {
             Mesh = new SphereMesh { Radius = 0.28f, Height = 0.56f },
             Position = new Vector3(0f, 1.75f, 0f),
         };
-        ((SphereMesh)head.Mesh).Material = _headMat;
-        _rig.AddChild(head);
+        ((SphereMesh)head.Mesh).Material =
+            new StandardMaterial3D { AlbedoColor = Lighten(roleColor, 0.15f), Roughness = 0.7f };
+        root.AddChild(head);
+        return root;
     }
 
-    // Every swing (melee/ranged/boss) routes through PlayAnim with an attack clip name;
-    // there's no skeleton, so we trigger a procedural lunge instead.
-    public override void PlayAnim(string name)
+    protected override void OnDamaged(float amount)
     {
-        base.PlayAnim(name);
-        if (name is "SwordSlash" or "Punch" or "Shoot_OneHanded")
-            _attack = 1f;
+        _flash = 1f;
+        Fx.Burst(GetParent(), GlobalPosition + new Vector3(0f, 1.1f, 0f),
+            new Color(0.85f, 0.2f, 0.2f, 0.9f), amount: 6, speed: 3.2f, life: 0.35f, size: 0.12f);
     }
 
-    protected override void OnDamaged(float amount) => _flash = 1f;
-
-    // Procedural animation layered on top of the base combat logic.
+    // Hit flash: lerp the shared overlay toward opaque white, then settle back to the team
+    // wash. The character's own AnimationPlayer handles the actual attack/move/death motion.
     public override void _Process(double delta)
     {
         base._Process(delta);
-        if (_rig == null || State == UnitState.Dead) return;
-        float dt = (float)delta;
+        if (_overlay == null) return;
 
-        // Attack lunge: quick push forward along local +Z, springing back.
-        if (_attack > 0f)
+        // After death, sink the corpse into the ground and darken it so the field of the
+        // fallen recedes instead of staying a bright pile.
+        if (State == UnitState.Dead)
         {
-            _attack = Mathf.Max(0f, _attack - dt / AttackTime);
-            float p = 1f - _attack;
-            _rig.Position = new Vector3(0f, 0f, Mathf.Sin(p * Mathf.Pi) * LungeDist);
-        }
-        else if (_rig.Position != Vector3.Zero)
-        {
-            _rig.Position = Vector3.Zero;
+            if (_deadT < DeadSettle)
+            {
+                _deadT += (float)delta;
+                float k = Mathf.Clamp(_deadT / DeadSettle, 0f, 1f);
+                if (_model != null) _model.Position = new Vector3(0f, -DeadSink * k, 0f);
+                _overlay.AlbedoColor = _teamBase.Lerp(new Color(0.1f, 0.1f, 0.1f, 0.55f), k);
+            }
+            return;
         }
 
-        // Hit reaction: flash toward white + a brief squash.
         if (_flash > 0f)
         {
-            _flash = Mathf.Max(0f, _flash - dt / FlashTime);
-            _bodyMat.AlbedoColor = _bodyBase.Lerp(Colors.White, _flash * 0.85f);
-            _headMat.AlbedoColor = _headBase.Lerp(Colors.White, _flash * 0.85f);
-            float sq = 1f + 0.22f * _flash;
-            _rig.Scale = new Vector3(sq, 1f - 0.18f * _flash, sq);
+            _flash = Mathf.Max(0f, _flash - (float)delta / FlashTime);
+            _overlay.AlbedoColor = _teamBase.Lerp(new Color(1f, 1f, 1f, 0.85f), _flash);
         }
-        else if (_rig.Scale != Vector3.One)
+        else if (_overlay.AlbedoColor != _teamBase)
         {
-            _bodyMat.AlbedoColor = _bodyBase;
-            _headMat.AlbedoColor = _headBase;
-            _rig.Scale = Vector3.One;
+            _overlay.AlbedoColor = _teamBase;
         }
     }
 
-    // Tip the corpse over so dead bodies read differently from the living.
     protected override void OnKilled()
     {
-        RotateObjectLocal(Vector3.Right, Mathf.Pi * 0.5f);
-        Position += new Vector3(0f, -0.25f, 0f);
+        // The character's Death animation lays the body down; add a dust puff for weight.
+        Fx.Burst(GetParent(), GlobalPosition + new Vector3(0f, 0.4f, 0f),
+            new Color(0.6f, 0.55f, 0.5f, 0.8f), amount: 10, speed: 2.6f, life: 0.5f, size: 0.16f, gravity: -3f);
+    }
+
+    private static void CollectMeshes(Node node, List<MeshInstance3D> into)
+    {
+        if (node is MeshInstance3D mi) into.Add(mi);
+        foreach (var child in node.GetChildren())
+            CollectMeshes(child, into);
     }
 
     private static StandardMaterial3D Unshaded(Color c) => new()
